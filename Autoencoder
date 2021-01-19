@@ -1,0 +1,278 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Oct 20 09:53:29 2020
+
+@author: Samuel Warner, 10512277
+@name: Autoencoder with Enhanced Metrics
+
+Most of this code is based off two resources:
+    Tensorflow.orgs Auoencoder tutorial: https://www.tensorflow.org/tutorials/generative/autoencoder
+    Jeff Heaton's Autoencoder tutorial: https://github.com/jeffheaton/t81_558_deep_learning/blob/master/t81_558_class_14_03_anomaly.ipynb
+    Dataset used is the UNSW_NB15, found at: https://github.com/InitRoot/UNSW_NB15
+        
+"""
+
+# All of the modules we need
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+import matplotlib.pyplot as plt
+from sklearn import metrics
+from IPython.display import display, HTML
+from sklearn import preprocessing as pp
+from tensorflow.keras.models import Sequential
+from tensorflow.keras import layers, losses
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Model
+
+
+
+# read the provided csv files using pandas
+df_train = pd.read_csv('UNSW_NB15_training-set.csv')
+df_test = pd.read_csv('UNSW_NB15_testing-set.csv')
+
+# Concatenate the two sets into one whole set
+frames = [df_train, df_test]
+df_unsw= pd.concat(frames)
+
+# set some display restrictions so we don't blow up console
+pd.set_option('display.max_columns', 5)
+pd.set_option('display.max_rows', 5)
+
+# Min max scalar from sklearn to standardise our numeric data
+mm_scaler = pp.MinMaxScaler()
+
+# Function to standarise range of numeric values to bx 0-1
+# Parameters are a dataframe, string column name and a MinMax Scaler
+def MinMax(df, col_name, scaler) :
+    arr = df[col_name].to_numpy()
+    # Need to reshape to a multi-dim array otherwise cant transform
+    arr = arr.reshape(257673, 1)
+    #transform the values
+    arr_min_max = scaler.fit_transform(arr)
+    #replace the old values with the new values
+    df[col_name] = arr_min_max
+    
+
+# Encode text values to dummy variables(i.e. [1,0,0],[0,1,0],[0,0,1] 
+# for red,green,blue) Taken from Heaton (link here)
+def Encode_One_Hot(df, name):
+    # Get the dummy or one-hot or 1 of N columns using pandas get_dummies
+    dummies = pd.get_dummies(df[name])
+    # Add the dummies to the dataframe
+    for x in dummies.columns:
+        dummy_name = f"{name}-{x}"
+        df[dummy_name] = dummies[x]
+    df.drop(name, axis=1, inplace=True)
+    
+print('Shape before: ' , df_unsw.shape)
+
+# Standardise the columns of the dataset
+MinMax(df_unsw, 'dur', mm_scaler)
+Encode_One_Hot(df_unsw, 'xProt')
+Encode_One_Hot(df_unsw, 'xServ')
+Encode_One_Hot(df_unsw, 'xState')
+MinMax(df_unsw, 'spkts', mm_scaler)
+MinMax(df_unsw, 'dpkts', mm_scaler)
+MinMax(df_unsw, 'sbytes', mm_scaler)
+MinMax(df_unsw, 'dbytes', mm_scaler)
+MinMax(df_unsw, 'rate', mm_scaler)
+MinMax(df_unsw, 'sttl', mm_scaler)
+MinMax(df_unsw, 'dttl', mm_scaler)
+MinMax(df_unsw, 'sload', mm_scaler)
+MinMax(df_unsw, 'dload', mm_scaler)
+MinMax(df_unsw, 'sloss', mm_scaler)
+MinMax(df_unsw, 'dloss', mm_scaler)
+MinMax(df_unsw, 'sinpkt', mm_scaler)
+MinMax(df_unsw, 'dinpkt', mm_scaler)
+MinMax(df_unsw, 'sjit', mm_scaler)
+MinMax(df_unsw, 'djit', mm_scaler)
+MinMax(df_unsw, 'swin', mm_scaler)
+MinMax(df_unsw, 'stcpb', mm_scaler)
+MinMax(df_unsw, 'dtcpb', mm_scaler)
+MinMax(df_unsw, 'dwin', mm_scaler)
+MinMax(df_unsw, 'tcprtt', mm_scaler)
+MinMax(df_unsw, 'synack', mm_scaler)
+MinMax(df_unsw, 'ackdat', mm_scaler)
+MinMax(df_unsw, 'sbytes', mm_scaler)
+MinMax(df_unsw, 'smean', mm_scaler)
+MinMax(df_unsw, 'dmean', mm_scaler)
+MinMax(df_unsw, 'trans_depth', mm_scaler)
+MinMax(df_unsw, 'response_body_len', mm_scaler)
+MinMax(df_unsw, 'ct_srv_src', mm_scaler)
+MinMax(df_unsw, 'ct_state_ttl', mm_scaler)
+MinMax(df_unsw, 'ct_dst_ltm', mm_scaler)
+MinMax(df_unsw, 'ct_src_dport_ltm', mm_scaler)
+MinMax(df_unsw, 'ct_dst_sport_ltm', mm_scaler)
+MinMax(df_unsw, 'ct_dst_src_ltm', mm_scaler)
+#is_ftp_login is binary
+MinMax(df_unsw, 'ct_ftp_cmd', mm_scaler)
+MinMax(df_unsw, 'ct_flw_http_mthd', mm_scaler)
+MinMax(df_unsw, 'ct_src_ltm', mm_scaler)
+MinMax(df_unsw, 'ct_srv_dst', mm_scaler)
+#is_sm_ips_ports is binary
+
+print('Shape after: ' , df_unsw.shape)
+# remove any missing values
+df_unsw.dropna(inplace=True, axis=1)
+
+#get the attack/normal labels from the data set
+labels = df_unsw['label']
+
+#drop the labels from the main set - we want unsupervised learning
+df_unsw.drop('label', axis=1, inplace=True)
+#drop id because it is misleading to the autoencoder
+df_unsw.drop('id', axis=1, inplace=True)
+
+#convert dataset into numpy array - won't work otherwise
+df_unsw = df_unsw.to_numpy()
+
+# split the data and labels into training and testing with a 75% 25% split
+# setting random state means we will get the same split every time we run the program
+train_data, test_data, train_labels, test_labels = train_test_split(
+    df_unsw, labels, test_size=0.25, random_state=24) #kobe
+
+# Use the labels to seperate the data into normal and attack
+train_labels = train_labels.astype(bool) 
+test_labels = test_labels.astype(bool)
+
+normal_train_data = train_data[train_labels]
+normal_test_data = test_data[test_labels]
+
+attack_train_data = train_data[~train_labels]
+attack_test_data = test_data[~test_labels]
+
+
+print(f"Normal Train Count: {len(normal_train_data)}")
+print(f"Normal Test Count: {len(normal_test_data)}")
+"""
+# Prints an example of normal training data
+plt.grid()
+plt.plot(np.arange(177), normal_train_data[0])
+plt.title('Normal Train Data')
+plt.show()
+
+# Prints an example of attack training data
+plt.grid()
+plt.plot(np.arange(177), attack_train_data[0])
+plt.title('Attack Train Data')
+plt.show
+"""
+# Here we will build an autoencoder using the super Anomoly_tensorDetector
+class Anomoly_Detector(Model) :
+    def __init__(self) :
+        super(Anomoly_Detector, self).__init__()
+        # Encoding layer
+        self.encoder = tf.keras.Sequential([
+            layers.Dense(32, input_dim=177, activation='relu'),
+            layers.Dense(16, activation='relu'),
+            layers.Dense(8, activation='relu')])
+        # Decoding layer
+        self.decoder = tf.keras.Sequential([
+            layers.Dense(16, activation='relu'),
+            layers.Dense(32, activation='relu'),
+            layers.Dense(177, activation='relu')            
+            ])
+    # call the encoder - here we could use a stacked method
+    def call(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return decoded
+
+# initialise our autoencoder
+autoencoder = Anomoly_Detector()
+# set loss function and optimizer
+autoencoder.compile(optimizer='adam', loss='mean_squared_error')
+# run the autoencoder
+history = autoencoder.fit(normal_train_data, normal_train_data,
+                          epochs=25, validation_data=(test_data, test_data))
+                  
+# Plot the training and validation loss
+plt.plot(history.history["loss"], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Training Loss / Validation Loss')
+plt.ylabel('Value')
+plt.xlabel('Epochs')
+plt.legend()
+plt.show()
+plt.close()
+
+# here we are getting the difference between the input image and the 
+# reconstruction image, or the reconstruction error. For normal data
+encoded_data = autoencoder.encoder(normal_test_data).numpy()
+decoded_data = autoencoder.decoder(encoded_data).numpy()
+
+
+plt.plot(normal_test_data[0], 'b')
+plt.plot(decoded_data[0], 'r')
+plt.fill_between(np.arange(177), decoded_data[0], normal_test_data[0],
+                 color = 'black')
+plt.legend(labels=["Input", "Reconstruction", "Error"])
+plt.title('Normal Reconstruction Error')
+plt.show()
+plt.close()
+
+# Now get the reconstruction error for attack data
+encoded_data = autoencoder.encoder(attack_test_data).numpy()
+decoded_data = autoencoder.decoder(encoded_data).numpy()
+
+print('Line 218...')
+plt.plot(attack_test_data[0], 'b')
+plt.plot(decoded_data[0], 'r')
+plt.fill_between(np.arange(177), decoded_data[0], attack_test_data[0],
+                 color = 'black')
+plt.legend(labels=["Input", "Reconstruction", "Error"])
+plt.title('Attack Reconstruction Error')
+plt.show()
+plt.close()
+
+# to detect anomalies we calculate whether the reconstruction loss
+# is greater than a fixed threshold (we talked about thresholds in assignment 1)
+
+# we can plot the reconstruction error / test loss
+reconstructions = autoencoder.predict(normal_train_data)
+train_loss = tf.keras.losses.mean_squared_error(reconstructions, normal_train_data)
+
+"""
+plt.hist(train_loss)
+plt.xlabel('Train Loss')
+plt.ylabel('No. of examples')
+plt.title('Normal Train Loss')
+plt.show()
+plt.close()
+"""
+# we can then set a threshold. We do it here by going one standard
+# deviation above the mean
+threshold = np.mean(train_loss) + np.std(train_loss)
+print('Threshold: ', threshold)
+
+#plot the test loss on anomalous data
+reconstructions = autoencoder.predict(attack_test_data)
+test_loss = tf.keras.losses.mean_squared_error(reconstructions, attack_test_data)
+print('Attack Reconstruction Error: ', metrics.mean_squared_error(
+    attack_test_data, reconstructions))
+    
+"""
+plt.hist(test_loss)
+plt.xlabel('Train Loss')
+plt.ylabel('No. of examples')
+plt.title('Normal Test Loss')
+plt.show()
+plt.close()
+
+"""
+# Now we can classify a attack packet as an anomoly if the
+# reconstruction error is greater than the threshold
+def predict(model, data, threshold):
+    reconstructions = model(data)
+    loss = tf.keras.losses.mean_squared_error(reconstructions, data)
+    return tf.math.less(loss, threshold)
+
+def print_stats(predictions, labels):
+    print("Accuracy = {}".format(metrics.accuracy_score(labels, predictions)))
+    print("Precision = {}".format(metrics.precision_score(labels, predictions)))
+    print("Recall = {}".format(metrics.recall_score(labels, predictions)))
+
+# Get the prediction from the autoencoder and print
+predictions = predict(autoencoder, test_data, threshold)
+print_stats(predictions, test_labels)
